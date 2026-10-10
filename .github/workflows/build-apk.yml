@@ -1,12 +1,9 @@
 name: Build APK (debug)
 
 # Compila o APK de depuração na nuvem do GitHub e publica em "Releases".
-# Localiza o projeto Android sozinho (nesta ordem):
-#  1) project.zip na raiz do repositório (é extraído antes do build);
-#  2) arquivos do projeto na raiz do repositório;
-#  3) arquivos do projeto dentro de uma subpasta (até 4 níveis);
-#  4) qualquer outro .zip do repositório que contenha settings.gradle(.kts).
-# Se nada for encontrado, o build para com uma mensagem clara (não tenta compilar a pasta errada).
+# Funciona de dois jeitos:
+#  - repositório com os arquivos do projeto na raiz; ou
+#  - repositório só com este arquivo + project.zip (o zip é extraído antes do build).
 
 on:
   workflow_dispatch:
@@ -24,79 +21,19 @@ jobs:
 
       - name: Localizar o projeto
         run: |
-          set -eu
-          SRC=""
-
-          has_gradle_settings() {
-            [ -f "$1/settings.gradle.kts" ] || [ -f "$1/settings.gradle" ]
-          }
-
-          # Extrai um .zip só se ele realmente contiver settings.gradle(.kts); define SRC.
-          try_zip() {
-            z="$1"
-            [ -f "$z" ] || return 1
-            unzip -Z1 "$z" 2>/dev/null | grep -Eq '(^|/)settings\.gradle(\.kts)?$' || return 1
+          if [ -f project.zip ]; then
             rm -rf src_proj && mkdir src_proj
-            unzip -q "$z" -d src_proj
-            F=$(find src_proj -maxdepth 5 -type f \( -name settings.gradle.kts -o -name settings.gradle \) -not -path '*/__MACOSX/*' -printf '%d %h\n' | sort -n | head -n 1 | cut -d' ' -f2-)
-            [ -n "$F" ] || return 1
-            SRC="$F"
-            echo "Projeto extraído de: $z"
-          }
-
-          if try_zip ./project.zip; then
-            :
-          elif has_gradle_settings .; then
-            SRC="."
-            echo "Projeto encontrado na raiz do repositório."
+            unzip -q project.zip -d src_proj
+            F=$(find src_proj -maxdepth 3 -name settings.gradle.kts | head -n 1)
+            echo "SRC=$(dirname "$F")" >> "$GITHUB_ENV"
           else
-            F=$(find . -maxdepth 4 \( -path ./.git -o -path ./src_proj \) -prune -o -type f \( -name settings.gradle.kts -o -name settings.gradle \) -printf '%d %h\n' | sort -n | head -n 1 | cut -d' ' -f2-)
-            if [ -n "$F" ]; then
-              SRC="$F"
-              echo "Projeto encontrado na subpasta: $F"
-            else
-              ZIPS=$(find . -maxdepth 4 -path ./.git -prune -o -type f -iname '*.zip' -print | sort)
-              while IFS= read -r z; do
-                [ -n "$z" ] || continue
-                if try_zip "$z"; then break; fi
-              done <<< "$ZIPS"
-            fi
+            echo "SRC=." >> "$GITHUB_ENV"
           fi
-
-          if [ -z "$SRC" ] || ! has_gradle_settings "$SRC"; then
-            echo "::error title=Projeto Gradle não encontrado::Nenhum settings.gradle(.kts) na raiz, em subpastas ou dentro de um .zip do repositório."
-            echo "--- Conteúdo do repositório (até 3 níveis) ---"
-            find . -maxdepth 3 -path ./.git -prune -o -print | sort
-            exit 1
-          fi
-
-          SRC=$(cd "$SRC" && pwd)
-          echo "SRC=$SRC" >> "$GITHUB_ENV"
-          echo "Projeto Android em: $SRC"
-
-      - name: Confirmar arquivos do Gradle
-        run: |
-          set -eu
-          echo "Pasta do projeto: $SRC"
-          ls -la "$SRC"
-          missing=0
-          for f in "$SRC/settings.gradle.kts:$SRC/settings.gradle" \
-                   "$SRC/build.gradle.kts:$SRC/build.gradle" \
-                   "$SRC/app/build.gradle.kts:$SRC/app/build.gradle"; do
-            a="${f%%:*}"; b="${f##*:}"
-            if [ -f "$a" ]; then echo "OK  $a"
-            elif [ -f "$b" ]; then echo "OK  $b"
-            else echo "::error title=Arquivo Gradle ausente::Faltam $a ou $b"; missing=1
-            fi
-          done
-          [ "$missing" -eq 0 ]
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
-
-      - uses: android-actions/setup-android@v3
 
       - uses: gradle/actions/setup-gradle@v4
         with:
