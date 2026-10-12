@@ -1,5 +1,5 @@
 
-name: Build Android APK
+name: Criar APK para Android
 
 on:
   workflow_dispatch:
@@ -15,54 +15,61 @@ jobs:
   build:
     name: Build Atlas APK
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout repository
+      - name: Baixar projeto
         uses: actions/checkout@v4
 
-      - name: Setup Java 17
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK
+      - name: Configurar Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: false
 
-      - name: Install Android SDK 35
+      - name: Aceitar licencas Android
+        shell: bash
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+
+      - name: Instalar Android SDK 35
+        shell: bash
         run: |
           sdkmanager --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "platform-tools"
 
-      - name: Setup Gradle 8.9
+      - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Build Debug APK
-        run: gradle :app:assembleDebug --stacktrace
+      - name: Compilar APK
+        run: gradle :app:assembleDebug --stacktrace --no-daemon
 
-      - name: Run Unit Tests
+      - name: Executar testes
+        run: gradle :app:testDebugUnitTest --stacktrace --no-daemon
+
+      - name: Disponibilizar APK
         if: success()
-        run: gradle :app:testDebugUnitTest --stacktrace
-
-      - name: Upload APK
-        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: atlas-debug-apk
+          name: Atlas-Android-APK
           path: app/build/outputs/apk/debug/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
-      - name: Upload Build Reports
+      - name: Salvar relatorios de erro
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: atlas-build-reports
+          name: Atlas-Build-Reports
           path: |
             app/build/reports/
             build/reports/
