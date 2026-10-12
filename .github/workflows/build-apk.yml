@@ -1,4 +1,3 @@
-
 name: Criar APK para Android
 
 on:
@@ -21,6 +20,11 @@ jobs:
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
+    defaults:
+      run:
+        shell: bash
+        working-directory: atlas
+
     steps:
       - name: Baixar projeto
         uses: actions/checkout@v4
@@ -31,35 +35,37 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Preparar Android SDK
-        shell: bash
+      - name: Preparar Android SDK 35
+        working-directory: .
         run: |
           set -euo pipefail
-          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
-          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 
           test -x "$SDKMANAGER"
 
-          echo "Instalando SDK Android 35..."
           "$SDKMANAGER" --install \
             "platforms;android-35" \
             "build-tools;35.0.0" \
             "platform-tools"
 
-          echo "SDK instalado."
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
 
       - name: Configurar Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
 
-      - name: Verificar estrutura do projeto
-        shell: bash
+      - name: Verificar arquivos do Atlas
         run: |
+          echo "Verificando projeto..."
+          pwd
+          ls -la
+
           test -f settings.gradle.kts
           test -f app/build.gradle.kts
+
           gradle --version
 
       - name: Compilar APK Atlas
@@ -76,21 +82,28 @@ jobs:
             --stacktrace \
             --console=plain
 
-      - name: Publicar APK
+      - name: Verificar APK gerado
+        run: |
+          echo "Procurando APK..."
+          ls -lh app/build/outputs/apk/debug/
+
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Disponibilizar APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Atlas-Android-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: atlas/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Publicar relatorios de erro
+      - name: Salvar relatorios de erro
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: Atlas-Build-Reports
           path: |
-            app/build/reports/
-            build/reports/
+            atlas/app/build/reports/
+            atlas/build/reports/
           if-no-files-found: ignore
