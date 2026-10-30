@@ -1,427 +1,181 @@
 
-name: Dmap - Criar APK para Android
+name: Infinity Clicker V3 - Compilar APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+  pull_request:
 
 permissions:
   contents: read
 
-concurrency:
-  group: dmap-build-${{ github.ref }}
-  cancel-in-progress: true
-
 jobs:
-  build:
-    name: Compilar APK Dmap
-    runs-on: ubuntu-latest
+  build-apk:
+    name: Gerar APK instalavel
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
 
-    env:
-      ANDROID_API: "36"
-      BUILD_TOOLS: "35.0.0"
-      GRADLE_OPTS: >-
-        -Dorg.gradle.daemon=false
-        -Dorg.gradle.jvmargs=-Xmx3g
-        -Dfile.encoding=UTF-8
-
     steps:
+      - name: Baixar codigo do repositorio
+        uses: actions/checkout@v7
 
-      # 1 - BAIXAR REPOSITORIO
-
-      - name: Baixar codigo-fonte
-        uses: actions/checkout@v4
-
-      # 2 - CONFIGURAR JAVA
+      - name: Conferir arquivos essenciais
+        shell: bash
+        run: |
+          set -euo pipefail
+          for arquivo in \
+            settings.gradle.kts \
+            build.gradle.kts \
+            app/build.gradle.kts \
+            gradlew \
+            gradle/wrapper/gradle-wrapper.jar \
+            gradle/wrapper/gradle-wrapper.properties; do
+            if [ ! -f "$arquivo" ]; then
+              echo "::error::Arquivo ausente: $arquivo"
+              exit 1
+            fi
+          done
+          chmod +x gradlew
 
       - name: Configurar Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v6
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
-      # 3 - CONFIGURAR ANDROID SDK
+      - name: Configurar Gradle e cache
+        uses: gradle/actions/setup-gradle@v6
+        with:
+          cache-provider: basic
 
       - name: Configurar Android SDK
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          SDK_ROOT="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
-
-          if [ ! -d "$SDK_ROOT/cmdline-tools" ]; then
-            echo "::error::Android SDK nao encontrado"
-            exit 1
-          fi
-
-          SDKMANAGER=$(find "$SDK_ROOT/cmdline-tools" \
-            -type f -name sdkmanager \
-            | sort -V | tail -n 1)
-
-          if [ -z "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager nao encontrado"
-            exit 1
-          fi
-
-          echo "ANDROID_HOME=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
-          echo "SDKMANAGER=$SDKMANAGER" >> "$GITHUB_ENV"
-
-          "$SDKMANAGER" --version
-
-      # 4 - ACEITAR LICENCAS
-
-      - name: Aceitar licencas Android
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          set +o pipefail
-          yes | "$SDKMANAGER" --licenses \
-            > "$RUNNER_TEMP/sdk-licenses.log" 2>&1
-          RESULT=${PIPESTATUS[1]}
-          set -o pipefail
-
-          if [ "$RESULT" -ne 0 ]; then
-            tail -n 40 "$RUNNER_TEMP/sdk-licenses.log"
-            exit 1
-          fi
-
-          echo "Licencas aceitas."
-
-      # 5 - INSTALAR SDK 36
-
-      - name: Instalar componentes Android
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          "$SDKMANAGER" --install \
-            "platform-tools" \
-            "platforms;android-${ANDROID_API}" \
-            "build-tools;${BUILD_TOOLS}"
-
-          test -f \
-            "$ANDROID_HOME/platforms/android-${ANDROID_API}/android.jar"
-
-          test -d \
-            "$ANDROID_HOME/build-tools/${BUILD_TOOLS}"
-
-          echo "Android SDK configurado."
-
-      # 6 - CONFIGURAR GRADLE
-
-      - name: Configurar Gradle 8.13
-        uses: gradle/actions/setup-gradle@v4
+        uses: android-actions/setup-android@v4
         with:
-          gradle-version: "8.13"
+          packages: 'platform-tools'
 
-      # 7 - DIAGNOSTICAR ARQUIVOS
-
-      - name: Verificar arquivos do repositorio
+      - name: Instalar SDK 36 e Build Tools
         shell: bash
         run: |
           set -euo pipefail
-
-          echo "=== RAIZ ==="
-          pwd
-          ls -la
-
-          echo "=== PROJETOS GRADLE ==="
-          find . -maxdepth 8 -type f \
-            \( -name "settings.gradle.kts" \
-               -o -name "settings.gradle" \) \
-            -print
-
-          echo "=== ARQUIVOS ZIP ==="
-          find . -maxdepth 5 -type f \
-            -iname "*.zip" -print
-
-      # 8 - LOCALIZAR OU EXTRAIR PROJETO
-
-      - name: Preparar projeto Dmap
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          find_project() {
-            while IFS= read -r FILE; do
-              DIR=$(dirname "$FILE")
-
-              if [ -f "$DIR/app/build.gradle.kts" ] || \
-                 [ -f "$DIR/app/build.gradle" ]; then
-                printf '%s\n' "$DIR"
-                return 0
-              fi
-            done < <(
-              find . -maxdepth 10 -type f \
-                \( -name "settings.gradle.kts" \
-                   -o -name "settings.gradle" \) \
-                -not -path "*/.gradle/*" \
-                -print
-            )
-
-            return 1
-          }
-
-          PROJECT_DIR="$(find_project || true)"
-
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "Projeto nao encontrado em pastas."
-            echo "Procurando ZIP..."
-
-            ZIP_FILE=$(find . -maxdepth 5 \
-              -type f -iname "*.zip" \
-              -print -quit)
-
-            if [ -n "$ZIP_FILE" ]; then
-              echo "Extraindo: $ZIP_FILE"
-
-              mkdir -p "$RUNNER_TEMP/dmap-extracted"
-
-              unzip -q "$ZIP_FILE" \
-                -d "$RUNNER_TEMP/dmap-extracted"
-
-              cd "$RUNNER_TEMP/dmap-extracted"
-
-              PROJECT_DIR="$(find_project || true)"
-
-              if [ -n "$PROJECT_DIR" ]; then
-                PROJECT_DIR="$(realpath "$PROJECT_DIR")"
-              fi
+          sucesso=0
+          for tentativa in 1 2 3; do
+            echo "Tentativa $tentativa/3"
+            if sdkmanager --install \
+              'platforms;android-36' \
+              'build-tools;35.0.0' \
+              'build-tools;36.0.0'; then
+              sucesso=1
+              break
             fi
-          else
-            PROJECT_DIR="$(realpath "$PROJECT_DIR")"
-          fi
+            if [ "$tentativa" -lt 3 ]; then
+              sleep 15
+            fi
+          done
 
-          if [ -z "$PROJECT_DIR" ]; then
-            echo "::error::Projeto Android nao encontrado."
-            echo "O repositorio precisa conter o codigo-fonte."
+          if [ "$sucesso" -ne 1 ]; then
+            echo '::error::Falha na instalacao do SDK.'
             exit 1
           fi
 
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+          SDK_DIR="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
 
-          echo "Projeto encontrado:"
-          echo "$PROJECT_DIR"
-
-          ls -la "$PROJECT_DIR"
-
-      # 9 - CONFIGURAR APIS
-
-      - name: Configurar APIs Dmap
-        shell: bash
-        env:
-          GEOAPIFY_API_KEY: ${{ secrets.GEOAPIFY_API_KEY }}
-          MAP_STYLE_URL: ${{ secrets.MAP_STYLE_URL }}
-          MAPKIT_TOKEN_URL: ${{ secrets.MAPKIT_TOKEN_URL }}
-          MAPKIT_WEB_ORIGIN: ${{ secrets.MAPKIT_WEB_ORIGIN }}
-        run: |
-          set -euo pipefail
-
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-
-          root = Path(os.environ["PROJECT_DIR"])
-          target = root / "local.properties"
-
-          keys = [
-              "GEOAPIFY_API_KEY",
-              "MAP_STYLE_URL",
-              "MAPKIT_TOKEN_URL",
-              "MAPKIT_WEB_ORIGIN"
-          ]
-
-          def escape(value):
-              return (
-                  value.replace("\\", "\\\\")
-                  .replace("\r", "")
-                  .replace("\n", "")
-              )
-
-          lines = []
-
-          for key in keys:
-              value = os.environ.get(key, "")
-              lines.append(f"{key}={escape(value)}")
-
-              if not value:
-                  print(f"AVISO: {key} nao configurada")
-
-          target.write_text(
-              "\n".join(lines) + "\n",
-              encoding="utf-8"
-          )
-
-          target.chmod(0o600)
-
-          print("Configuracoes criadas.")
-          PY
-
-      # 10 - SELECIONAR GRADLE
-
-      - name: Preparar Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          if [ -f gradlew ] && \
-             [ -f gradle/wrapper/gradle-wrapper.jar ] && \
-             [ -f gradle/wrapper/gradle-wrapper.properties ]; then
-
-            chmod +x gradlew
-            echo "GRADLE_CMD=./gradlew" >> "$GITHUB_ENV"
-
-          else
-
-            echo "GRADLE_CMD=gradle" >> "$GITHUB_ENV"
-
+          if [ -z "$SDK_DIR" ] || \
+             [ ! -f "$SDK_DIR/platforms/android-36/android.jar" ]; then
+            echo '::error::SDK 36 nao encontrado.'
+            exit 1
           fi
 
-      # 11 - VERIFICAR AMBIENTE
-
-      - name: Diagnosticar Gradle
+      - name: Preparar Gradle Wrapper
         shell: bash
         run: |
           set -euo pipefail
-
-          mkdir -p "$GITHUB_WORKSPACE/build-logs"
-
-          cd "$PROJECT_DIR"
-
-          {
-            echo "=== JAVA ==="
-            java -version
-
-            echo "=== GRADLE ==="
-            "$GRADLE_CMD" --version
-
-            echo "=== PROJETO ==="
-            pwd
-            ls -la
-          } 2>&1 | tee \
-            "$GITHUB_WORKSPACE/build-logs/environment.log"
-
-      # 12 - VALIDAR PROJETO
-
-      - name: Verificar configuracao Gradle
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          "$GRADLE_CMD" help \
-            --no-daemon \
-            --stacktrace \
-            --console=plain \
-            2>&1 | tee \
-            "$GITHUB_WORKSPACE/build-logs/gradle-check.log"
-
-      # 13 - COMPILAR APK
+          for tentativa in 1 2 3; do
+            if ./gradlew --version; then
+              exit 0
+            fi
+            if [ "$tentativa" -lt 3 ]; then
+              sleep 10
+            fi
+          done
+          echo '::error::Falha ao iniciar Gradle.'
+          exit 1
 
       - name: Compilar APK Debug
-        id: compile
         shell: bash
         run: |
           set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          "$GRADLE_CMD" :app:assembleDebug \
+          ./gradlew \
             --no-daemon \
+            --no-parallel \
+            --max-workers=2 \
             --stacktrace \
-            --warning-mode all \
             --console=plain \
-            2>&1 | tee \
-            "$GITHUB_WORKSPACE/build-logs/build.log"
+            -Pkotlin.compiler.execution.strategy=in-process \
+            :app:assembleDebug
 
-      # 14 - VERIFICAR APK
-
-      - name: Verificar APK gerado
-        id: apk
+      - name: Validar APK
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p dist
 
-          APK_DIR="$PROJECT_DIR/app/build/outputs/apk/debug"
-
-          if [ ! -d "$APK_DIR" ]; then
-            echo "::error::Pasta do APK nao encontrada"
-            exit 1
-          fi
-
-          APK_FILE=$(find "$APK_DIR" \
+          APK_ORIGINAL="$(find \
+            app/build/outputs/apk/debug \
             -maxdepth 1 \
             -type f \
-            -name "*.apk" \
-            -print -quit)
+            -name '*.apk' \
+            -print -quit)"
 
-          if [ -z "$APK_FILE" ] || [ ! -s "$APK_FILE" ]; then
-            echo "::error::APK nao encontrado ou vazio"
+          if [ -z "$APK_ORIGINAL" ] || \
+             [ ! -s "$APK_ORIGINAL" ]; then
+            echo '::error::APK nao encontrado.'
             exit 1
           fi
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          cp "$APK_ORIGINAL" \
+            dist/Infinity-Clicker-V3-debug.apk
 
-          cp "$APK_FILE" \
-            "$GITHUB_WORKSPACE/output/Dmap-debug.apk"
+          sha256sum \
+            dist/Infinity-Clicker-V3-debug.apk \
+            > dist/SHA256.txt
 
-          cd "$GITHUB_WORKSPACE/output"
-
-          sha256sum Dmap-debug.apk \
-            > Dmap-debug.sha256
-
-          echo "APK gerado:"
-          ls -lh Dmap-debug.apk
-
-      # 15 - PUBLICAR APK
+          ls -lh dist/
 
       - name: Publicar APK
-        if: success()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: Dmap-Android-APK
-          path: output/
+          name: Infinity-Clicker-V3-APK
+          path: dist/
           if-no-files-found: error
-          retention-days: 30
           compression-level: 0
+          retention-days: 30
 
-      # 16 - SALVAR LOGS
+      - name: Executar testes
+        id: testes
+        continue-on-error: true
+        shell: bash
+        run: |
+          ./gradlew \
+            --no-daemon \
+            --no-parallel \
+            --max-workers=2 \
+            --stacktrace \
+            --console=plain \
+            -Pkotlin.compiler.execution.strategy=in-process \
+            :app:testDebugUnitTest
 
-      - name: Publicar logs de diagnostico
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - name: Publicar relatorios
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          name: Dmap-Build-Logs
-          path: build-logs/
+          name: Infinity-Clicker-V3-Testes
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
           if-no-files-found: ignore
           retention-days: 14
 
-      # 17 - RELATORIO FINAL
-
-      - name: Relatorio da build
-        if: always()
-        shell: bash
+      - name: Avisar sobre testes com falha
+        if: steps.testes.outcome == 'failure'
         run: |
-          {
-            echo "## Dmap - Resultado"
-            echo ""
-            echo "| Componente | Configuracao |"
-            echo "|---|---|"
-            echo "| Java | 17 |"
-            echo "| Gradle instalado | 8.13 |"
-            echo "| Android SDK | 36 |"
-            echo "| Build Tools | 35.0.0 |"
-            echo ""
-            echo "Compilacao: ${{ steps.compile.outcome }}"
-            echo ""
-            echo "APK: ${{ steps.apk.outcome }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          echo '::warning::APK gerado, mas existem testes com falha.'
