@@ -1,11 +1,9 @@
-name: Infinity Clicker V3 - Build APK
+name: Infinity Clicker V3 - Criar APK
 
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-      - master
+    branches: ['**']
 
 permissions:
   contents: read
@@ -16,238 +14,94 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
-    defaults:
-      run:
-        shell: bash
-
     steps:
-      # 1. Baixar repositorio
-      - name: Checkout
+      - name: Baixar repositorio
         uses: actions/checkout@v4
 
-      # 2. Configurar Java
-      - name: Setup Java 17
+      - name: Configurar Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      # 3. Configurar Android SDK
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      # 4. Instalar SDK e licencas
-      - name: Install Android SDK
+      - name: Preparar Android SDK
+        shell: bash
         run: |
           set -euo pipefail
 
-          yes | sdkmanager --licenses || true
+          SDK_DIR="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
 
-          for tentativa in 1 2 3; do
-            if sdkmanager \
-              "platform-tools" \
-              "platforms;android-36" \
-              "build-tools;35.0.0" \
-              "build-tools;36.0.0"; then
-              break
-            fi
+          echo "ANDROID_HOME=$SDK_DIR" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$SDK_DIR" >> "$GITHUB_ENV"
 
-            if [ "$tentativa" -eq 3 ]; then
-              exit 1
-            fi
+          SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
 
-            sleep 15
-          done
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$SDK_DIR/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+          fi
 
-      # 5. Localizar projeto Android
-      - name: Find Android Project
+          if [ ! -x "$SDKMANAGER" ]; then
+            echo "::error::sdkmanager nao encontrado."
+            exit 1
+          fi
+
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+
+          "$SDKMANAGER" --install \
+            'platform-tools' \
+            'platforms;android-36' \
+            'build-tools;36.0.0'
+
+          test -f "$SDK_DIR/platforms/android-36/android.jar"
+
+      - name: Preparar Gradle
+        shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$RUNNER_TEMP/android-project"
-
-          PROJECT=""
-
-          # Procurar na raiz
-          if [ -f settings.gradle.kts ] || \
-             [ -f settings.gradle ]; then
-            PROJECT="$GITHUB_WORKSPACE"
-          fi
-
-          # Procurar em subpastas
-          if [ -z "$PROJECT" ]; then
-            PROJECT_FILE=$(find . \
-              -type f \
-              \( -name settings.gradle.kts \
-              -o -name settings.gradle \) \
-              -not -path './.git/*' \
-              -print -quit)
-
-            if [ -n "$PROJECT_FILE" ]; then
-              PROJECT=$(dirname "$PROJECT_FILE")
-            fi
-          fi
-
-          # Procurar dentro de arquivos ZIP
-          if [ -z "$PROJECT" ]; then
-            echo "Procurando projeto em arquivos ZIP..."
-
-            while IFS= read -r -d '' ZIP; do
-              echo "Extraindo: $ZIP"
-
-              DEST="$RUNNER_TEMP/android-project"
-
-              unzip -oq "$ZIP" -d "$DEST"
-
-              PROJECT_FILE=$(find "$DEST" \
-                -type f \
-                \( -name settings.gradle.kts \
-                -o -name settings.gradle \) \
-                -print -quit)
-
-              if [ -n "$PROJECT_FILE" ]; then
-                PROJECT=$(dirname "$PROJECT_FILE")
-                break
-              fi
-            done < <(find . \
-              -type f \
-              -iname '*.zip' \
-              -not -path './.git/*' \
-              -print0)
-          fi
-
-          if [ -z "$PROJECT" ]; then
-            echo "::error::Projeto Android nao encontrado."
-            echo "Envie o projeto completo ou um ZIP valido."
-            exit 1
-          fi
-
-          PROJECT=$(realpath "$PROJECT")
-
-          echo "Projeto encontrado em: $PROJECT"
-
-          echo "PROJECT_DIR=$PROJECT" >> "$GITHUB_ENV"
-
-      # 6. Verificar arquivos
-      - name: Validate Project
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          echo "Arquivos encontrados:"
-          ls -la
-
-          if [ ! -f gradlew ]; then
-            echo "::error::Gradle Wrapper ausente."
-            exit 1
-          fi
-
-          if [ ! -f gradle/wrapper/gradle-wrapper.jar ]; then
-            echo "::error::Gradle Wrapper JAR ausente."
-            exit 1
-          fi
-
-          if [ ! -f app/build.gradle.kts ] && \
-             [ ! -f app/build.gradle ]; then
-            echo "::error::Modulo app nao encontrado."
-            exit 1
-          fi
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          test -f gradlew
 
           chmod +x gradlew
 
-      # 7. Configurar cache Gradle
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
+          ./gradlew --version
 
-      # 8. Configurar memoria
-      - name: Configure Gradle Memory
+      - name: Compilar APK
+        shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$HOME/.gradle"
-
-          cat >> "$HOME/.gradle/gradle.properties" <<EOF
-          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
-          org.gradle.parallel=false
-          org.gradle.workers.max=2
-          org.gradle.caching=true
-          kotlin.compiler.execution.strategy=in-process
-          EOF
-
-      # 9. Verificar Gradle
-      - name: Verify Gradle
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          for tentativa in 1 2 3; do
-            if ./gradlew --version; then
-              exit 0
-            fi
-
-            echo "Tentativa $tentativa falhou."
-
-            sleep 10
-          done
-
-          exit 1
-
-      # 10. Compilar APK
-      - name: Build Debug APK
-        run: |
-          set -euo pipefail
-
-          cd "$PROJECT_DIR"
-
-          ./gradlew \
-            :app:assembleDebug \
+          ./gradlew :app:assembleDebug \
             --no-daemon \
             --no-parallel \
             --max-workers=2 \
             --stacktrace \
-            --console=plain
+            --console=plain \
+            -Pkotlin.compiler.execution.strategy=in-process
 
-      # 11. Localizar APK gerado
-      - name: Find Generated APK
+      - name: Verificar APK
+        shell: bash
         run: |
           set -euo pipefail
 
-          mkdir -p "$GITHUB_WORKSPACE/output"
+          mkdir -p dist
 
-          APK=$(find "$PROJECT_DIR/app/build/outputs/apk" \
-            -type f \
-            -name '*.apk' \
-            -print -quit)
+          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -type f -print -quit)"
 
-          if [ -z "$APK" ]; then
+          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
             echo "::error::APK nao encontrado."
             exit 1
           fi
 
-          cp "$APK" \
-            "$GITHUB_WORKSPACE/output/Infinity-Clicker-V3.apk"
+          cp "$APK" dist/Infinity-Clicker-V3-debug.apk
 
-          echo "APK gerado com sucesso!"
+          ls -lh dist/
 
-          ls -lh "$GITHUB_WORKSPACE/output"
-
-      # 12. Publicar APK
-      - name: Upload APK
+      - name: Disponibilizar APK
         uses: actions/upload-artifact@v4
         with:
           name: Infinity-Clicker-V3-APK
-          path: output/*.apk
+          path: dist/*.apk
           if-no-files-found: error
           retention-days: 30
-          compression-level: 0
-
-      # 13. Resultado
-      - name: Build Completed
-        run: |
-          echo "================================"
-          echo "INFINITY CLICKER V3"
-          echo "APK COMPILADO COM SUCESSO"
-          echo "================================"
-          echo "Baixe o APK na secao Artifacts."
