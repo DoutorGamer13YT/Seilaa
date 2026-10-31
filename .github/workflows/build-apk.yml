@@ -3,19 +3,21 @@ name: Infinity Clicker V3 - Criar APK
 on:
   workflow_dispatch:
   push:
-    branches: ['**']
+    branches:
+      - main
+      - master
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Compilar Infinity Clicker
+    name: Compilador Infinity Clicker
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
     steps:
-      - name: Baixar repositorio
+      - name: Baixar projeto
         uses: actions/checkout@v4
 
       - name: Configurar Java 17
@@ -37,40 +39,77 @@ jobs:
           SDKMANAGER="$SDK_DIR/cmdline-tools/latest/bin/sdkmanager"
 
           if [ ! -x "$SDKMANAGER" ]; then
-            SDKMANAGER="$(find "$SDK_DIR/cmdline-tools" -type f -name sdkmanager | sort -V | tail -n 1)"
+            SDKMANAGER="$(find "$SDK_DIR/cmdline-tools" -type f -name sdkmanager | head -n 1)"
           fi
 
           if [ ! -x "$SDKMANAGER" ]; then
-            echo "::error::sdkmanager nao encontrado."
+            echo "::error::sdkmanager nao encontrado"
             exit 1
           fi
 
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          echo "Instalando Android SDK 36..."
 
           "$SDKMANAGER" --install \
-            'platform-tools' \
-            'platforms;android-36' \
-            'build-tools;36.0.0'
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+          echo "Verificando SDK..."
 
           test -f "$SDK_DIR/platforms/android-36/android.jar"
 
-      - name: Preparar Gradle
+          echo "Android SDK configurado!"
+
+      - name: Localizar projeto Android
+        id: project
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f settings.gradle.kts
-          test -f app/build.gradle.kts
-          test -f gradlew
+          if [ -f settings.gradle.kts ] || [ -f settings.gradle ]; then
+            PROJECT_DIR="."
+          else
+            SETTINGS_FILE="$(find . -maxdepth 4 -type f \
+              \( -name settings.gradle.kts -o -name settings.gradle \) \
+              -not -path '*/.gradle/*' \
+              -print -quit)"
+
+            if [ -z "$SETTINGS_FILE" ]; then
+              echo "::error::Projeto Android nao encontrado."
+              exit 1
+            fi
+
+            PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          echo "Projeto localizado em: $PROJECT_DIR"
+
+          ls -la "$PROJECT_DIR"
+
+      - name: Configurar Gradle
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd "$PROJECT_DIR"
+
+          if [ ! -f gradlew ]; then
+            echo "::error::Gradle Wrapper nao encontrado."
+            exit 1
+          fi
 
           chmod +x gradlew
 
           ./gradlew --version
 
-      - name: Compilar APK
+      - name: Compilar Infinity Clicker V3
         shell: bash
         run: |
           set -euo pipefail
+
+          cd "$PROJECT_DIR"
 
           ./gradlew :app:assembleDebug \
             --no-daemon \
@@ -80,28 +119,32 @@ jobs:
             --console=plain \
             -Pkotlin.compiler.execution.strategy=in-process
 
-      - name: Verificar APK
+      - name: Preparar APK
         shell: bash
         run: |
           set -euo pipefail
 
           mkdir -p dist
 
-          APK="$(find app/build/outputs/apk/debug -maxdepth 1 -name '*.apk' -type f -print -quit)"
+          APK="$(find "$PROJECT_DIR/app/build/outputs/apk/debug" \
+            -maxdepth 1 \
+            -type f \
+            -name '*.apk' \
+            -print -quit)"
 
-          if [ -z "$APK" ] || [ ! -s "$APK" ]; then
-            echo "::error::APK nao encontrado."
+          if [ -z "$APK" ]; then
+            echo "::error::APK nao foi gerado."
             exit 1
           fi
 
-          cp "$APK" dist/Infinity-Clicker-V3-debug.apk
+          cp "$APK" dist/Infinity-Clicker-V3.apk
 
           ls -lh dist/
 
-      - name: Disponibilizar APK
+      - name: Publicar APK
         uses: actions/upload-artifact@v4
         with:
           name: Infinity-Clicker-V3-APK
-          path: dist/*.apk
-          if-no-files-found: error
+          path: dist/Infinity-Clicker-V3.apk
           retention-days: 30
+          if-no-files-found: error
